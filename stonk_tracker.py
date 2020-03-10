@@ -1,5 +1,6 @@
 from enum import Enum
 from threading import Thread, Event
+from datetime import datetime
 
 import pandas as pd
 import yfinance as yf
@@ -12,6 +13,13 @@ class Symbol:
     self.name = name
     self.price = -1
     self.previous_close = -1
+
+  def __eq__(self, other):
+    if isinstance(other, Symbol):
+      return self.name == other.name
+    elif isinstance(other, str):
+      return self.name == other
+    return False
 
   def __str__(self):
     return '{}: {}'.format(self.name, type(self))
@@ -67,23 +75,34 @@ class TriggerableTimer(Thread):
 def val(pd_object):
   return pd_object.values[0]
 
+################################################################################
+# Logging
+################################################################################
+
+def get_current_timestamp():
+  return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
 def log(s):
   max_row, _ = stdscr.getmaxyx()
-  stdscr.addstr(max_row-2, 0, s, curses.color_pair(0))
+  stdscr.addstr(max_row-2, 0, '{}> {}'.format(get_current_timestamp(), s), curses.color_pair(0))
   stdscr.clrtoeol()
   stdscr.refresh()
 
 def warn(s):
   max_row, _ = stdscr.getmaxyx()
-  stdscr.addstr(max_row-2, 0, s, curses.color_pair(3))
+  stdscr.addstr(max_row-2, 0, '{}> {}'.format(get_current_timestamp(), s), curses.color_pair(3))
   stdscr.clrtoeol()
   stdscr.refresh()
 
 def error(s):
   max_row, _ = stdscr.getmaxyx()
-  stdscr.addstr(max_row-2, 0, s, curses.color_pair(2))
+  stdscr.addstr(max_row-2, 0, '{}> {}'.format(get_current_timestamp(), s), curses.color_pair(2))
   stdscr.clrtoeol()
   stdscr.refresh()
+
+################################################################################
+# Web calls
+################################################################################
 
 def refresh_stock(stock):
   log('refreshing data for stock {}'.format(stock.name))
@@ -122,6 +141,14 @@ def refresh_symbols(symbols):
       error('failed to refresh {}'.format(symbol.name))
   log('refreshed all symbols!')
 
+def refresh_thread_callback():
+  refresh_symbols(symbols)
+  draw_symbols(stdscr, symbols)
+
+################################################################################
+# Drawing Functions
+################################################################################
+
 def draw_symbol(stdscr, row, symbol):
   stdscr.addstr(row, 0, symbol.name)
   stdscr.addstr(row, 20, '{:.2f}'.format(symbol.price))
@@ -140,9 +167,10 @@ def draw_symbols(stdscr, symbols):
     draw_symbol(stdscr, i, symbol)
   stdscr.refresh()
 
-def refresh_thread_callback():
-  refresh_symbols(symbols)
+def redraw_screen(stdscr, symbols):
+  stdscr.clear()
   draw_symbols(stdscr, symbols)
+  log('redrew screen')
 
 ################################################################################
 # Command Handlers
@@ -160,7 +188,12 @@ def follow_handler(stdscr, command, args):
     error('failed to add stock {}'.format(stock))
 
 def unfollow_handler(stdscr, command, args):
-  stdscr.addstr(6, 0, 'unfollowing...')
+  try:
+    symbols.remove(args[0])
+    draw_symbols(stdscr, symbols)
+    log('unfollowed {}'.format(args[0]))
+  except Exception:
+    error('couldn\'t unfollow {}'.format(args[0]))
 
 def follow_call_handler(stdscr, command, args):
   # followoption SPY 2020-03-08
@@ -222,9 +255,9 @@ UNKNOWN_COMMAND = ''
 
 command_handlers = {
   'follow': follow_handler,
-  'unfollow': unfollow_handler,
   'followcall': follow_call_handler,
   'followput': follow_put_handler,
+  'unfollow': unfollow_handler,
   'refresh': refresh_handler,
   'exit': exit_handler,
   '': unknown_command_handler,
@@ -267,6 +300,8 @@ def main(ss):
     if key == ':':
       command, args = read_command(stdscr)
       command_handlers[command](stdscr, command, args)
+    elif key == 'KEY_RESIZE':
+      redraw_screen(stdscr, symbols)
 
   stdscr.refresh()
   stdscr.getkey()
