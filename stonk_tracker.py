@@ -1,4 +1,5 @@
 from enum import Enum
+from threading import Thread, Event
 
 import pandas as pd
 import yfinance as yf
@@ -12,9 +13,15 @@ class Symbol:
     self.price = -1
     self.previous_close = -1
 
+  def __str__(self):
+    return '{}: {}'.format(self.name, type(self))
+
   @property 
   def percent_change(self):
-    return (self.price / self.previous_close - 1) * 100
+    # Double check we're not crashing here
+    if self.previous_close != 0:
+      return (self.price / self.previous_close - 1) * 100
+    return 0
 
 class Stock(Symbol):
   def __init__(self, name):
@@ -32,17 +39,51 @@ class OptionType(Enum):
   CALL = 1
   PUT = 2
 
+class TriggerableTimer(Thread):
+  def __init__(self, callback):
+    super().__init__()
+    self._callback = callback
+    self._triggered = Event()
+    self._stopped = False
+
+  def trigger(self):
+    self._triggered.set()
+
+  def stop(self):
+    self._stopped
+    self._triggered.set()
+
+  def run(self):
+    while True:
+      self._triggered.wait(60)
+      # Check if we're done
+      if self._stopped:
+        log('timer stopped')
+        break
+      log('timer triggered')
+      self._callback()
+      self._triggered.clear()
+
 def val(pd_object):
   return pd_object.values[0]
 
 def log(s):
-  pass #print(s)
+  max_row, _ = stdscr.getmaxyx()
+  stdscr.addstr(max_row-2, 0, s, curses.color_pair(0))
+  stdscr.clrtoeol()
+  stdscr.refresh()
 
 def warn(s):
-  print('warning: {}'.format(s))
+  max_row, _ = stdscr.getmaxyx()
+  stdscr.addstr(max_row-2, 0, s, curses.color_pair(3))
+  stdscr.clrtoeol()
+  stdscr.refresh()
 
 def error(s):
-  print('ERROR: {}'.format(s))
+  max_row, _ = stdscr.getmaxyx()
+  stdscr.addstr(max_row-2, 0, s, curses.color_pair(2))
+  stdscr.clrtoeol()
+  stdscr.refresh()
 
 def refresh_stock(stock):
   log('refreshing data for stock {}'.format(stock.name))
@@ -73,14 +114,15 @@ def refresh_symbol(symbol):
     error('Unknown symbol {}'.format(symbol))
 
 def refresh_symbols(symbols):
+  log('refreshing all symbols...')
   for symbol in symbols:
     try:
       refresh_symbol(symbol)
     except Exception:
       error('failed to refresh {}'.format(symbol.name))
+  log('refreshed all symbols!')
 
 def draw_symbol(stdscr, row, symbol):
-  stdscr.clrtoeol()
   stdscr.addstr(row, 0, symbol.name)
   stdscr.addstr(row, 20, '{:.2f}'.format(symbol.price))
 
@@ -91,11 +133,16 @@ def draw_symbol(stdscr, row, symbol):
   else:
     percent_color = curses.color_pair(0)
   stdscr.addstr(row, 30, '{:.2f}%'.format(symbol.percent_change), percent_color)
+  stdscr.clrtoeol()
 
 def draw_symbols(stdscr, symbols):
   for i, symbol in enumerate(symbols):
     draw_symbol(stdscr, i, symbol)
   stdscr.refresh()
+
+def refresh_thread_callback():
+  refresh_symbols(symbols)
+  draw_symbols(stdscr, symbols)
 
 ################################################################################
 # Command Handlers
@@ -140,7 +187,7 @@ def follow_put_handler(stdscr, command, args):
     error('failed to add put {}'.format(option))
 
 def refresh_handler(stdscr, command, args):
-  refresh_symbols(symbols)
+  refresh_thread.trigger()
 
 def exit_handler(stdscr, command, args):
   exit()
@@ -150,9 +197,9 @@ def unknown_command_handler(stdscr, command, args):
 
 def read_command(stdscr):
   max_row, _ = stdscr.getmaxyx()
-  stdscr.clrtoeol()
   # Draw at the bottom
   stdscr.addstr(max_row-1, 0, ':')
+  stdscr.clrtoeol()
   curses.echo()
   command_input = stdscr.getstr(max_row-1, 1, 128).decode('utf-8')
   curses.noecho()
@@ -183,28 +230,37 @@ command_handlers = {
   '': unknown_command_handler,
 }
 
-schd = Symbol('SCHD')
+schd = Stock('SCHD')
 schd.price = 50.1
 schd.previous_close = 52
 
-ivv = Symbol('IVV')
+ivv = Stock('IVV')
 ivv.price = 201.5
 ivv.previous_close = 190
 
-spy = Symbol('SPY')
+spy = Stock('SPY')
 spy.price = 291.5
 spy.previous_close = 291.5
 
-symbols = []#[schd, ivv, spy]
+symbols = [schd, ivv, spy]
 
-def main(stdscr):
+def main(ss):
+  global stdscr
+  stdscr = ss
+
   stdscr.clear()
 
   curses.use_default_colors()
   curses.init_pair(1, curses.COLOR_GREEN, -1)
   curses.init_pair(2, curses.COLOR_RED, -1)
+  curses.init_pair(3, curses.COLOR_YELLOW, -1)
 
   draw_symbols(stdscr, symbols)
+
+  # start refreshing
+  global refresh_thread
+  refresh_thread = TriggerableTimer(refresh_thread_callback)
+  refresh_thread.start()
 
   while True:
     key = stdscr.getkey()
